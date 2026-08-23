@@ -1,18 +1,18 @@
 {
-    "id": "discord-webhooks",
-    "name": "Discord Webhooks",
-    "author": "JoanFo",
-    "version": "1.0.0",
-    "description": "Adds back the Discord Webhooks.",
-    "category": "plugin",
-    "url": "",
-    "update_url": "",
-    "namespace": "JoanFo\\DiscordWebhooks",
-    "class": "DiscordWebhooksPlugin",
-    "panels": [
-        "admin",
-        "server"
-    ],
-    "panel_version": null,
-    "composer_packages": null
+  "id": "discord-webhooks",
+  "name": "Discord Webhooks",
+  "author": "JoanFo",
+  "version": "1.0.0",
+  "description": "Adds back the Discord Webhooks.",
+  "category": "plugin",
+  "url": "",
+  "update_url": "",
+  "namespace": "JoanFo\\DiscordWebhooks",
+  "class": "DiscordWebhooksPlugin",
+  "panels": [
+    "admin",
+    "server"
+  ],
+  "panel_version": null,
+  "composer_packages": null
 }
