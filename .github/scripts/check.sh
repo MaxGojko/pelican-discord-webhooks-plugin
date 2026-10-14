@@ -23,4 +23,15 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 
+# plugin.json must be valid and declare what the panel reads. A missing api_version makes the
+# panel's plugin list show a warning.
+php -r '
+$p = json_decode(file_get_contents("plugin.json"), true, flags: JSON_THROW_ON_ERROR);
+foreach (["id", "name", "version", "namespace", "class"] as $key) {
+    if (!is_string($p[$key] ?? null) || $p[$key] === "") { fwrite(STDERR, "::error file=plugin.json::missing $key\n"); exit(1); }
+}
+if (!is_int($p["api_version"] ?? null)) { fwrite(STDERR, "::error file=plugin.json::api_version must be an integer\n"); exit(1); }
+echo "plugin.json OK (api_version {$p["api_version"]})\n";
+'
+
 php tests/run.php

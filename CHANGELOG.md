@@ -2,6 +2,12 @@
 
 All notable changes to this plugin. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [semantic versioning](https://semver.org/).
 
+## [1.1.1] - 2026-10-14
+
+### Fixed
+
+- `plugin.json` now declares `"api_version": 1`, so the panel's plugin list no longer warns that it is missing. CI rejects a `plugin.json` without it.
+
 ## [1.1.0] - 2026-10-14
 
 ### Behaviour changes
@@ -51,5 +57,6 @@ Read these before updating from 1.0.0.
 
 - Initial release by JoanFo: Discord webhook type with message and embed editor, live preview and a migration that claims existing Discord webhooks.
 
+[1.1.1]: https://github.com/MaxGojko/pelican-discord-webhooks-plugin/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/MaxGojko/pelican-discord-webhooks-plugin/compare/4b47a62...v1.1.0
 [1.0.0]: https://github.com/JoanFo1456/discord-webhooks/releases/tag/v1.0.0
