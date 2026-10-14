@@ -8,6 +8,28 @@ use Illuminate\View\View;
 
 class DiscordPreview extends WebhookPreview
 {
+    /**
+     * Substitutes inside each string value rather than in the JSON text, so sample or event
+     * values with quotes or newlines cannot break the preview. Not sanitised on purpose: the
+     * form state still holds `#hex` colours and `has_timestamp`, which processEmbeds() reads.
+     *
+     * @return array<string, mixed>
+     */
+    protected function resolvePayload(): array
+    {
+        $payload = $this->formPayload ?? $this->record?->payload;
+
+        if (blank($payload) || !is_array($payload)) {
+            return [];
+        }
+
+        $sampleData = $this->resolveScope() === \App\Enums\WebhookScope::Server
+            ? \App\Models\WebhookConfiguration::getServerWebhookSampleData()
+            : \App\Models\WebhookConfiguration::getWebhookSampleData();
+
+        return \JoanFo\DiscordWebhooks\Support\PayloadRenderer::render($payload, $sampleData);
+    }
+
     public function render(): View
     {
         return view('discord-webhooks::livewire.discord-preview', $this->getViewData());
