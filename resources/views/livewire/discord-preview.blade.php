@@ -1,6 +1,7 @@
 <div>
     @assets
-        <link rel="stylesheet" href="{{ asset('plugins/discord-webhooks/css/discord-preview.css') }}">
+        {{-- Plugin-owned stylesheet (see DiscordPreview::stylesheet()), the only raw output in this view. --}}
+        <style>{!! $css !!}</style>
     @endassets
 
     <div class="dc-chat">
@@ -16,9 +17,7 @@
                 {{-- Meta row --}}
                 <div class="dc-meta">
                     <span class="dc-username">{{ $sender['name'] ?? 'Pelican' }}</span>
-                    @if (!($sender['human'] ?? false))
-                        <span class="dc-bot-tag">app</span>
-                    @endif
+                    <span class="dc-bot-tag">APP</span>
                     <span class="dc-timestamp">{{ $getTime() }}</span>
                 </div>
 
@@ -67,9 +66,9 @@
                                     @if (!empty($embed['view']['fields']))
                                         <div class="dc-embed-fields">
                                             @foreach ($embed['view']['fields'] as $field)
-                                                <div class="dc-embed-field {{ !empty($field['inline']) ? 'inline' : '' }}">
-                                                    <div class="dc-embed-field-name">{{ $field['name'] ?? '' }}</div>
-                                                    <div class="dc-embed-field-value">{!! nl2br(e($field['value'] ?? '')) !!}</div>
+                                                <div class="dc-embed-field {{ $field['inline'] ? 'inline' : '' }}">
+                                                    <div class="dc-embed-field-name">{{ $field['name'] }}</div>
+                                                    <div class="dc-embed-field-value">{!! nl2br(e($field['value'])) !!}</div>
                                                 </div>
                                             @endforeach
                                         </div>

@@ -28,8 +28,15 @@ jobs:
 
       - name: Resolve release version
         id: release
+        env:
+          RAW_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          TAG="$RAW_TAG"
+          SEMVER='^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if [[ ! "$TAG" =~ $SEMVER ]]; then
+            echo "::error::Release tag is not a valid version (expected v<major>.<minor>.<patch>)"
+            exit 1
+          fi
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -37,10 +44,11 @@ jobs:
           echo "Resolved version: $VERSION"
 
       - name: Update plugin.json and update.json
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          REPO="${{ github.repository }}"
-          TAG="${{ steps.release.outputs.tag }}"
-          VERSION="${{ steps.release.outputs.version }}"
           DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/discord-webhooks.zip"
 
           jq --arg version "$VERSION" '.version = $version' plugin.json > plugin.json.tmp
@@ -56,6 +64,8 @@ jobs:
           EOF
 
       - name: Commit and push metadata to default branch
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -64,14 +74,15 @@ jobs:
           if git diff --staged --quiet; then
             echo "No metadata changes to commit"
           else
-            git commit -m "Update release metadata to version ${{ steps.release.outputs.version }}"
+            git commit -m "Update release metadata to version $VERSION"
             git pull --rebase origin "${DEFAULT_BRANCH}"
             git push origin "HEAD:${DEFAULT_BRANCH}"
           fi
 
       - name: Verify default branch versions before packaging
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          VERSION="${{ steps.release.outputs.version }}"
           git fetch origin "${DEFAULT_BRANCH}"
 
           MAIN_PLUGIN_VERSION="$(git show "origin/${DEFAULT_BRANCH}:plugin.json" | jq -r '.version')"
@@ -91,7 +102,7 @@ jobs:
       - name: Create discord-webhooks directory structure
         run: |
           mkdir -p discord-webhooks
-          rsync -av --exclude='.git' --exclude='discord-webhooks' ./ discord-webhooks/
+          rsync -av --exclude='.git' --exclude='/.github' --exclude='/tests' --exclude='discord-webhooks' ./ discord-webhooks/
 
       - name: Create zip archive
         run: zip -r discord-webhooks.zip discord-webhooks/
@@ -108,6 +119,8 @@ jobs:
       - name: Upload zip to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          REPO: ${{ github.repository }}
         run: |
           gh --version
-          gh release upload "${{ steps.release.outputs.tag }}" discord-webhooks.zip --repo "${{ github.repository }}" --clobber
+          gh release upload "$TAG" discord-webhooks.zip --repo "$REPO" --clobber
