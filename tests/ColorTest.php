@@ -48,3 +48,27 @@ test('Color round trips every colour through both directions', function () {
         assertSame($color, Color::fromHex(Color::toHex($color)));
     }
 });
+
+test('Color::parse is the one grammar for stored and rendered colours', function () {
+    assertSame(0x00FF00, Color::parse(0x00FF00));
+    assertSame(0, Color::parse(0));
+    assertSame(0, Color::parse('0'));
+    assertSame(255, Color::parse('255'));
+    assertSame(255, Color::parse(255.0));
+    assertSame(0xFF0000, Color::parse('#ff0000'));
+    assertSame(0xFF0000, Color::parse('ff0000'));
+    assertSame(0xFFFFFF, Color::parse(' #FFF '));
+    assertSame(0xFFFFFF, Color::parse('16777215'));
+});
+
+test('Color::parse rejects everything else', function () {
+    foreach ([null, '', true, false, -1, 0xFFFFFF + 1, '16777216', 1.5, INF, NAN, [], 'red', "#fff\n;", 'url(x)', 'red; background:url(//evil.example/x)'] as $bad) {
+        assertSame(null, Color::parse($bad), 'should reject ' . var_export($bad, true));
+    }
+});
+
+test('Color::toHex output is always safe to place in a style attribute', function () {
+    foreach ([0, 255, '65280', '#ABC', 'ff00ff'] as $value) {
+        assertTrue(preg_match('/\A#[0-9a-f]{6}\z/', (string) Color::toHex($value)) === 1);
+    }
+});

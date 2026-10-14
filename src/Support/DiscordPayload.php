@@ -10,18 +10,41 @@ namespace JoanFo\DiscordWebhooks\Support;
  * Form state and payload deliberately differ in a few places:
  *  - the embed colour is a `#rrggbb` string in the form and an integer in the payload;
  *  - the flag and allowed mention checkboxes are lists in the form and a bit field and
- *    an `allowed_mentions.parse` list in the payload.
+ *    an `allowed_mentions.parse` list in the payload;
+ *  - payload keys the form has no field for (`tts`, `applied_tags`, mention ids, an
+ *    embed `timestamp`) travel through the form in a hidden `_extra` entry, at the top
+ *    level and inside each embed, so editing a payload that was created through the API
+ *    does not silently delete them. Only keys on the Discord allowlist are carried, and
+ *    a key the form does model always wins over its `_extra` copy.
  */
 final class DiscordPayload
 {
-    /** Discord message flag: SUPPRESS_EMBEDS */
-    public const FLAG_SUPPRESS_EMBEDS = 1 << 2;
+    /** Form state key holding the payload data the form has no field for. */
+    public const EXTRA = '_extra';
 
-    /** Discord message flag: SUPPRESS_NOTIFICATIONS */
-    public const FLAG_SUPPRESS_NOTIFICATIONS = 1 << 12;
+    /** Top level payload keys that have a form field. */
+    private const MODELLED_KEYS = [
+        'username',
+        'avatar_url',
+        'content',
+        'embeds',
+        'thread_name',
+        'flags',
+        'allowed_mentions',
+    ];
 
-    /** Mention types Discord can be told to parse, in the order the form lists them. */
-    public const MENTION_TYPES = ['roles', 'users', 'everyone'];
+    /** Embed keys that have a form field. */
+    private const MODELLED_EMBED_KEYS = [
+        'author',
+        'title',
+        'description',
+        'color',
+        'url',
+        'image',
+        'thumbnail',
+        'footer',
+        'fields',
+    ];
 
     /** Top level form keys that live inside the stored payload. */
     public const FIELDS = [
@@ -32,7 +55,21 @@ final class DiscordPayload
         'thread_name',
         'flags',
         'allowed_mentions',
+        self::EXTRA,
     ];
+
+    /**
+     * Whether the data holds any of the form fields. The panel always submits all of
+     * them, while the API sends a ready made `payload` or only unrelated attributes,
+     * such as a PATCH renaming the webhook. Only the first case may be collapsed,
+     * rebuilding a payload from fields that were never sent would empty it.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public static function hasFormFields(array $data): bool
+    {
+        return array_intersect_key($data, array_flip(self::FIELDS)) !== [];
+    }
 
     /**
      * Collapse form state into the stored payload.
@@ -49,14 +86,17 @@ final class DiscordPayload
             'username' => self::text($data['username'] ?? null),
             'avatar_url' => self::text($data['avatar_url'] ?? null),
             'content' => self::text($data['content'] ?? null),
-            'embeds' => self::embeds($data['embeds'] ?? null, fn (mixed $color): ?int => Color::fromHex($color)),
+            'embeds' => self::embeds($data['embeds'] ?? null, fn (mixed $color): ?int => Color::fromHex($color), false),
             'thread_name' => self::text($data['thread_name'] ?? null),
             'flags' => self::flagsFromForm($data['flags'] ?? null) ?: null,
         ]);
 
-        $payload['allowed_mentions'] = ['parse' => self::mentions($data['allowed_mentions'] ?? null)];
+        $extra = is_array($data[self::EXTRA] ?? null) ? $data[self::EXTRA] : [];
 
-        return $payload;
+        $payload['allowed_mentions'] = ['parse' => self::mentions($data['allowed_mentions'] ?? null)]
+            + self::keep($extra['allowed_mentions'] ?? null, Discord::MENTION_EXTRA_KEYS);
+
+        return $payload + self::keep($extra, array_diff(Discord::PAYLOAD_KEYS, self::MODELLED_KEYS));
     }
 
     /**
@@ -80,13 +120,14 @@ final class DiscordPayload
             'username' => self::text($payload['username'] ?? null),
             'avatar_url' => self::text($payload['avatar_url'] ?? null),
             'content' => self::text($payload['content'] ?? null),
-            'embeds' => self::embeds($payload['embeds'] ?? null, fn (mixed $color): ?string => Color::toHex($color)),
+            'embeds' => self::embeds($payload['embeds'] ?? null, fn (mixed $color): ?string => Color::toHex($color), true),
             'thread_name' => self::text($payload['thread_name'] ?? null),
+            self::EXTRA => self::extraFromPayload($payload),
         ]) + [
             'flags' => array_map(
                 'strval',
                 array_values(array_filter(
-                    [self::FLAG_SUPPRESS_EMBEDS, self::FLAG_SUPPRESS_NOTIFICATIONS],
+                    [Discord::FLAG_SUPPRESS_EMBEDS, Discord::FLAG_SUPPRESS_NOTIFICATIONS],
                     fn (int $flag): bool => ($flags & $flag) !== 0,
                 )),
             ),
@@ -105,12 +146,11 @@ final class DiscordPayload
             return 0;
         }
 
-        $allowed = self::FLAG_SUPPRESS_EMBEDS | self::FLAG_SUPPRESS_NOTIFICATIONS;
         $flags = 0;
 
         foreach ($selected as $bit) {
             if (is_int($bit) || (is_string($bit) && ctype_digit($bit))) {
-                $flags |= (int) $bit & $allowed;
+                $flags |= (int) $bit & Discord::FLAGS_ALLOWED;
             }
         }
 
@@ -127,29 +167,36 @@ final class DiscordPayload
         }
 
         return array_values(array_filter(
-            self::MENTION_TYPES,
+            Discord::MENTION_TYPES,
             fn (string $type): bool => in_array($type, $selected, true),
         ));
     }
 
     /**
-     * Shared by both directions, which differ only in how the colour is converted.
+     * Shared by both directions, which differ in how the colour is converted and in what
+     * happens to the keys the form does not model: they move into `_extra` on the way to
+     * the form and back out of it on the way to the payload.
      *
      * @param  \Closure(mixed): mixed  $color
      * @return list<array<string, mixed>>
      */
-    private static function embeds(mixed $embeds, \Closure $color): array
+    private static function embeds(mixed $embeds, \Closure $color, bool $toForm): array
     {
         if (!is_array($embeds)) {
             return [];
         }
 
         $result = [];
+        $extraKeys = array_diff(Discord::EMBED_KEYS, self::MODELLED_EMBED_KEYS);
 
         foreach ($embeds as $embed) {
             if (!is_array($embed)) {
                 continue;
             }
+
+            $extra = $toForm
+                ? [self::EXTRA => self::keep($embed, $extraKeys)]
+                : self::keep($embed[self::EXTRA] ?? null, $extraKeys);
 
             $embed = PayloadArray::withoutBlank([
                 'author' => self::pick($embed['author'] ?? null, ['name', 'url', 'icon_url']),
@@ -162,7 +209,7 @@ final class DiscordPayload
                 'footer' => self::pick($embed['footer'] ?? null, ['text', 'icon_url']),
                 'has_timestamp' => self::onlyTrue($embed['has_timestamp'] ?? null),
                 'fields' => self::fields($embed['fields'] ?? null),
-            ]);
+            ] + $extra);
 
             if ($embed !== []) {
                 $result[] = $embed;
@@ -234,6 +281,37 @@ final class DiscordPayload
         }
 
         return $result;
+    }
+
+    /**
+     * The payload data the form has no field for, for the hidden `_extra` state.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private static function extraFromPayload(array $payload): array
+    {
+        $extra = self::keep($payload, array_diff(Discord::PAYLOAD_KEYS, self::MODELLED_KEYS));
+        $mentions = self::keep($payload['allowed_mentions'] ?? null, Discord::MENTION_EXTRA_KEYS);
+
+        return $mentions === [] ? $extra : $extra + ['allowed_mentions' => $mentions];
+    }
+
+    /**
+     * Entries of an array under the listed keys, minus blank ones. Anything that is not
+     * an array yields nothing. The form state is client supplied, so this is also what
+     * stops `_extra` from smuggling in keys outside the allowlist.
+     *
+     * @param  iterable<array-key, string>  $keys
+     * @return array<string, mixed>
+     */
+    private static function keep(mixed $source, iterable $keys): array
+    {
+        if (!is_array($source)) {
+            return [];
+        }
+
+        return PayloadArray::withoutBlank(array_intersect_key($source, array_flip([...$keys])));
     }
 
     /**

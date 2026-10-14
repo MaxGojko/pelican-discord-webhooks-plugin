@@ -7,65 +7,61 @@
     <div class="dc-chat">
         <div class="dc-msg">
             {{-- Avatar --}}
-            @if ($avatar = $sender['avatar'])
-                <img src="{{ $avatar }}" class="dc-avatar" alt="">
-            @else
-                <div style="width:40px;height:40px;border-radius:50%;background:#5865f2;flex-shrink:0;margin-top:2px;"></div>
-            @endif
+            <img src="{{ $sender['avatar'] }}" class="dc-avatar" alt="" referrerpolicy="no-referrer" loading="lazy">
 
             <div class="dc-msg-body">
                 {{-- Meta row --}}
                 <div class="dc-meta">
-                    <span class="dc-username">{{ $sender['name'] ?? 'Pelican' }}</span>
+                    <span class="dc-username">{{ $sender['name'] }}</span>
                     <span class="dc-bot-tag">APP</span>
                     <span class="dc-timestamp">{{ $getTime() }}</span>
                 </div>
 
                 {{-- Message content --}}
-                @if (filled($content))
+                @if ($content !== null)
                     <div class="dc-content">{!! nl2br(e($content)) !!}</div>
                 @endif
 
                 {{-- Embeds --}}
                 @foreach ($embeds as $embed)
-                    <div class="dc-embed" style="{{ $embed['view']['color_style'] }}">
+                    <div class="dc-embed" style="{{ $embed['color_style'] }}">
                         <div class="dc-embed-body">
-                            <div class="dc-embed-grid {{ $embed['view']['thumbnail'] ? 'has-thumbnail' : '' }}">
+                            <div class="dc-embed-grid {{ $embed['thumbnail'] !== null ? 'has-thumbnail' : '' }}">
 
                                 <div class="dc-embed-content">
 
                                     {{-- Author --}}
-                                    @if ($embed['view']['author_name'])
+                                    @if ($embed['author_name'] !== null)
                                         <div class="dc-embed-author">
-                                            @if ($embed['view']['author_icon'])
-                                                <img src="{{ $embed['view']['author_icon'] }}" class="dc-embed-author-icon" alt="">
+                                            @if ($embed['author_icon'] !== null)
+                                                <img src="{{ $embed['author_icon'] }}" class="dc-embed-author-icon" alt="" referrerpolicy="no-referrer" loading="lazy">
                                             @endif
-                                            @if ($embed['view']['author_url'])
-                                                <a href="{{ $embed['view']['author_url'] }}" target="_blank" rel="noopener noreferrer" class="dc-embed-author-name dc-link">{{ $embed['view']['author_name'] }}</a>
+                                            @if ($embed['author_url'] !== null)
+                                                <a href="{{ $embed['author_url'] }}" target="_blank" rel="noopener noreferrer" class="dc-embed-author-name dc-link">{{ $embed['author_name'] }}</a>
                                             @else
-                                                <span class="dc-embed-author-name">{{ $embed['view']['author_name'] }}</span>
+                                                <span class="dc-embed-author-name">{{ $embed['author_name'] }}</span>
                                             @endif
                                         </div>
                                     @endif
 
                                     {{-- Title --}}
-                                    @if ($embed['view']['title'])
-                                        @if ($embed['view']['title_url'])
-                                            <a href="{{ $embed['view']['title_url'] }}" target="_blank" rel="noopener noreferrer" class="dc-embed-title">{{ $embed['view']['title'] }}</a>
+                                    @if ($embed['title'] !== null)
+                                        @if ($embed['title_url'] !== null)
+                                            <a href="{{ $embed['title_url'] }}" target="_blank" rel="noopener noreferrer" class="dc-embed-title">{{ $embed['title'] }}</a>
                                         @else
-                                            <div class="dc-embed-title">{{ $embed['view']['title'] }}</div>
+                                            <div class="dc-embed-title">{{ $embed['title'] }}</div>
                                         @endif
                                     @endif
 
                                     {{-- Description --}}
-                                    @if ($embed['view']['description'])
-                                        <div class="dc-embed-desc">{!! nl2br(e($embed['view']['description'])) !!}</div>
+                                    @if ($embed['description'] !== null)
+                                        <div class="dc-embed-desc">{!! nl2br(e($embed['description'])) !!}</div>
                                     @endif
 
                                     {{-- Fields --}}
-                                    @if (!empty($embed['view']['fields']))
+                                    @if ($embed['fields'] !== [])
                                         <div class="dc-embed-fields">
-                                            @foreach ($embed['view']['fields'] as $field)
+                                            @foreach ($embed['fields'] as $field)
                                                 <div class="dc-embed-field {{ $field['inline'] ? 'inline' : '' }}">
                                                     <div class="dc-embed-field-name">{{ $field['name'] }}</div>
                                                     <div class="dc-embed-field-value">{!! nl2br(e($field['value'])) !!}</div>
@@ -77,27 +73,27 @@
                                 </div>
 
                                 {{-- Thumbnail --}}
-                                @if ($embed['view']['thumbnail'])
-                                    <img src="{{ $embed['view']['thumbnail'] }}" class="dc-embed-thumbnail" alt="">
+                                @if ($embed['thumbnail'] !== null)
+                                    <img src="{{ $embed['thumbnail'] }}" class="dc-embed-thumbnail" alt="" referrerpolicy="no-referrer" loading="lazy">
                                 @endif
 
                             </div>{{-- /.dc-embed-grid --}}
 
                             {{-- Large image --}}
-                            @if ($embed['view']['image'])
-                                <img src="{{ $embed['view']['image'] }}" class="dc-embed-image" alt="">
+                            @if ($embed['image'] !== null)
+                                <img src="{{ $embed['image'] }}" class="dc-embed-image" alt="" referrerpolicy="no-referrer" loading="lazy">
                             @endif
 
                             {{-- Footer --}}
-                            @if ($embed['view']['footer_text'] || $embed['view']['timestamp'])
+                            @if ($embed['footer_text'] !== null || $embed['timestamp'] !== null)
                                 <div class="dc-embed-footer">
-                                    @if ($embed['view']['footer_icon'])
-                                        <img src="{{ $embed['view']['footer_icon'] }}" class="dc-embed-footer-icon" alt="">
+                                    @if ($embed['footer_icon'] !== null)
+                                        <img src="{{ $embed['footer_icon'] }}" class="dc-embed-footer-icon" alt="" referrerpolicy="no-referrer" loading="lazy">
                                     @endif
                                     <span class="dc-embed-footer-text">
-                                        @if ($embed['view']['footer_text']){{ $embed['view']['footer_text'] }}@endif
-                                        @if ($embed['view']['footer_text'] && $embed['view']['timestamp'])<span class="dc-embed-footer-sep">•</span>@endif
-                                        @if ($embed['view']['timestamp']){{ $embed['view']['timestamp'] }}@endif
+                                        @if ($embed['footer_text'] !== null){{ $embed['footer_text'] }}@endif
+                                        @if ($embed['footer_text'] !== null && $embed['timestamp'] !== null)<span class="dc-embed-footer-sep">•</span>@endif
+                                        @if ($embed['timestamp'] !== null){{ $embed['timestamp'] }}@endif
                                     </span>
                                 </div>
                             @endif

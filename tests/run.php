@@ -29,6 +29,12 @@ $GLOBALS['__tests'] = [];
 
 function test(string $name, callable $fn): void
 {
+    // A later test with the same name would silently replace the earlier one
+    if (array_key_exists($name, $GLOBALS['__tests'])) {
+        fwrite(STDERR, "Duplicate test name: {$name}\n");
+        exit(2);
+    }
+
     $GLOBALS['__tests'][$name] = $fn;
 }
 

@@ -330,3 +330,96 @@ test('an unusual but valid event payload round trips through JSON', function () 
     assertSame($out, $decoded);
     assertSame("Path C:\\Users\\x by O'Brien \"Bob\"\t", $decoded['content']);
 });
+
+test('an embed whose only text is "0" is kept', function () {
+    foreach (['title', 'description'] as $key) {
+        $out = prepared(['embeds' => [[$key => '0']]]);
+
+        assertSame([[$key => '0']], $out['embeds'], $key);
+        assertFalse(isset($out['content']), 'no default content when the embed survives');
+    }
+
+    assertSame([['author' => ['name' => '0']]], prepared(['embeds' => [['author' => ['name' => '0']]]])['embeds']);
+    assertSame([['footer' => ['text' => '0']]], prepared(['embeds' => [['footer' => ['text' => '0']]]])['embeds']);
+    assertSame([['fields' => [['name' => '0', 'value' => '0']]]], prepared(['embeds' => [['fields' => [['name' => '0', 'value' => '0']]]]])['embeds']);
+    assertSame('0', prepared(['content' => '0'])['content']);
+});
+
+test('invalid UTF-8 from event data never reaches the encoded payload', function () {
+    $bad = "\xff\xfe";
+    $out = prepared([
+        'content' => 'before {{ bad }} after',
+        'username' => '{{ bad }}',
+        'avatar_url' => 'https://example.com/{{ bad }}.png',
+        'embeds' => [[
+            'title' => 'T {{ bad }}',
+            'url' => 'https://example.com/{{ bad }}',
+            'footer' => ['text' => "raw \xc3\x28 template"],
+            'fields' => [['name' => '{{ bad }}', 'value' => '{{ bad }}']],
+        ]],
+    ], ['bad' => $bad, 'event' => 'e']);
+
+    $json = json_encode($out);
+    assertTrue($json !== false, 'json_encode failed: ' . json_last_error_msg());
+    assertTrue(mb_check_encoding($json, 'UTF-8'));
+    assertTrue(str_starts_with($out['content'], 'before '));
+    assertTrue(isset($out['avatar_url']), 'a scrubbed URL is still a URL');
+
+    // Rendering alone is already clean, not only the sanitised result
+    $rendered = PayloadRenderer::render(['a' => ['b' => 'x {{ bad }}']], ['bad' => $bad]);
+    assertTrue(mb_check_encoding($rendered['a']['b'], 'UTF-8'));
+});
+
+test('only allowlisted keys are delivered', function () {
+    $out = prepared([
+        'content' => 'x',
+        'components' => [['type' => 1]],
+        'image' => ['url' => 'https://example.com/legacy.png'],
+        'thumbnail' => ['url' => 'https://example.com/legacy.png'],
+        'attachments' => [1],
+        'embeds' => [['title' => 't', 'video' => ['url' => 'https://example.com/v.mp4'], 'type' => 'rich', 'has_timestamp' => false, 'provider' => ['name' => 'p']]],
+    ]);
+
+    assertSame(['content', 'embeds', 'allowed_mentions'], array_keys($out));
+    assertSame(['title'], array_keys($out['embeds'][0]));
+});
+
+test('tts is a boolean and applied_tags a short list of ids', function () {
+    assertSame(true, prepared(['content' => 'x', 'tts' => true])['tts']);
+    assertSame(true, prepared(['content' => 'x', 'tts' => 'true'])['tts']);
+    assertSame(false, prepared(['content' => 'x', 'tts' => 'false'])['tts']);
+    assertFalse(isset(prepared(['content' => 'x', 'tts' => 'maybe'])['tts']));
+    assertFalse(isset(prepared(['content' => 'x', 'tts' => ['a']])['tts']));
+
+    $tags = prepared(['content' => 'x', 'applied_tags' => [1, '2', '2', 'x', '3', ['4'], '5', '6', '7']])['applied_tags'];
+    assertSame(['1', '2', '3', '5', '6'], $tags);
+    assertSame('{"a":["1","2"]}', json_encode(['a' => prepared(['content' => 'x', 'applied_tags' => [5 => '1', 9 => '2']])['applied_tags']]));
+    assertFalse(isset(prepared(['content' => 'x', 'applied_tags' => 'nope'])['applied_tags']));
+    assertFalse(isset(prepared(['content' => 'x', 'applied_tags' => ['x']])['applied_tags']));
+});
+
+test('lists with gaps are re-indexed so they encode as JSON arrays', function () {
+    $out = prepared([
+        'content' => 'x',
+        'applied_tags' => [null, '1', '', '2'],
+        'allowed_mentions' => ['parse' => [3 => 'roles', 5 => 'users'], 'roles' => [null, '5']],
+        'embeds' => [4 => null, 7 => ['title' => 'a', 'fields' => [2 => ['name' => 'n', 'value' => 'v'], 9 => ['name' => 'm', 'value' => 'w']]]],
+    ]);
+
+    assertSame(
+        '{"content":"x","applied_tags":["1","2"],"allowed_mentions":{"parse":["users"],"roles":["5"]},"embeds":[{"title":"a","fields":[{"name":"n","value":"v"},{"name":"m","value":"w"}]}]}',
+        json_encode($out),
+    );
+});
+
+test('the renderer accepts the same colour grammar as the form', function () {
+    $color = fn (mixed $value) => prepared(['embeds' => [['title' => 't', 'color' => $value]]])['embeds'][0]['color'] ?? null;
+
+    foreach (['ff0000', '#ff0000', ' #FF0000 ', 'F00', '#f00', '16711680', 16711680] as $value) {
+        assertSame(0xFF0000, $color($value), var_export($value, true));
+    }
+
+    foreach (['', 'red', '#ff00', '16777216', -1] as $value) {
+        assertSame(null, $color($value), var_export($value, true));
+    }
+});

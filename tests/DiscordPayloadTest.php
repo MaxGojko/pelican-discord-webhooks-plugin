@@ -194,3 +194,102 @@ test('a payload saved before this change still opens in the form', function () {
     assertSame([], $form['allowed_mentions']);
     assertFalse(array_key_exists('username', $form));
 });
+
+test('hasFormFields tells a panel save from an API request', function () {
+    // The panel always submits every field
+    assertTrue(DiscordPayload::hasFormFields(discordEmptyForm()));
+    assertTrue(DiscordPayload::hasFormFields(['name' => 'x', 'content' => 'hi']));
+    assertTrue(DiscordPayload::hasFormFields(['embeds' => []]));
+
+    // PATCH {"name": "x"}, PATCH with a ready made payload, POST with a ready made payload
+    assertFalse(DiscordPayload::hasFormFields(['name' => 'x']));
+    assertFalse(DiscordPayload::hasFormFields(['name' => 'x', 'payload' => ['content' => 'kept']]));
+    assertFalse(DiscordPayload::hasFormFields(['payload' => null]));
+    assertFalse(DiscordPayload::hasFormFields([]));
+});
+
+test('every form field is listed in FIELDS so saving removes it from the model attributes', function () {
+    foreach (['username', 'avatar_url', 'content', 'embeds', 'thread_name', 'flags', 'allowed_mentions', DiscordPayload::EXTRA] as $field) {
+        assertTrue(in_array($field, DiscordPayload::FIELDS, true), $field);
+    }
+});
+
+/** A payload as an API client may store it: ids, tags, tts and a fixed embed timestamp. */
+function discordApiPayload(): array
+{
+    return [
+        'content' => 'hello',
+        'username' => 'Bot',
+        'tts' => true,
+        'thread_name' => 'Thread',
+        'applied_tags' => ['111', '222'],
+        'flags' => 4096,
+        'allowed_mentions' => ['parse' => ['everyone'], 'users' => ['123456789012345678'], 'roles' => ['987654321098765432'], 'replied_user' => true],
+        'embeds' => [
+            ['title' => 'One', 'color' => 0x5865F2, 'timestamp' => '2026-01-02T03:04:05+00:00', 'fields' => [['name' => 'a', 'value' => 'b', 'inline' => true]]],
+            ['description' => 'Two'],
+        ],
+    ];
+}
+
+test('data the form has no field for survives opening and saving in the panel', function () {
+    $original = discordApiPayload();
+    $form = DiscordPayload::toForm($original);
+
+    assertSame(['tts' => true, 'applied_tags' => ['111', '222'], 'allowed_mentions' => ['users' => ['123456789012345678'], 'roles' => ['987654321098765432'], 'replied_user' => true]], $form[DiscordPayload::EXTRA]);
+    assertSame(['timestamp' => '2026-01-02T03:04:05+00:00'], $form['embeds'][0][DiscordPayload::EXTRA]);
+    assertFalse(array_key_exists(DiscordPayload::EXTRA, $form['embeds'][1]));
+
+    $saved = DiscordPayload::fromForm($form);
+
+    assertSame(PayloadArrayNormalised($original), PayloadArrayNormalised($saved));
+    assertSame(json_encode(PayloadArrayNormalised($original)), json_encode(PayloadArrayNormalised($saved)));
+});
+
+/** Key order is not part of the contract, the content is. */
+function PayloadArrayNormalised(array $value): array
+{
+    foreach ($value as $key => $item) {
+        if (is_array($item)) {
+            $value[$key] = PayloadArrayNormalised($item);
+        }
+    }
+
+    if (!array_is_list($value)) {
+        ksort($value);
+    }
+
+    return $value;
+}
+
+test('a payload without extras gets no _extra state', function () {
+    $form = DiscordPayload::toForm(['content' => 'x', 'embeds' => [['title' => 'T']], 'allowed_mentions' => ['parse' => ['roles']]]);
+
+    assertFalse(array_key_exists(DiscordPayload::EXTRA, $form));
+    assertFalse(array_key_exists(DiscordPayload::EXTRA, $form['embeds'][0]));
+    assertFalse(array_key_exists(DiscordPayload::EXTRA, DiscordPayload::fromForm($form)));
+});
+
+test('keys the form models win over their _extra copy and unknown extras are dropped', function () {
+    $payload = DiscordPayload::fromForm(['content' => 'form', 'allowed_mentions' => ['roles'], DiscordPayload::EXTRA => [
+        'content' => 'extra',
+        'username' => 'extra',
+        'embeds' => [['title' => 'smuggled']],
+        'components' => [['type' => 1]],
+        'tts' => true,
+        'allowed_mentions' => ['parse' => ['everyone'], 'users' => ['1'], 'bogus' => 1],
+    ], 'embeds' => [['title' => 'T', 'timestamp' => 'form-never-modelled', DiscordPayload::EXTRA => ['title' => 'extra', 'timestamp' => '2026-01-02T03:04:05+00:00', 'bogus' => 1]]]] + discordEmptyForm());
+
+    assertSame('form', $payload['content']);
+    assertFalse(array_key_exists('username', $payload));
+    assertFalse(array_key_exists('components', $payload));
+    assertSame(true, $payload['tts']);
+    assertSame(['parse' => ['roles'], 'users' => ['1']], $payload['allowed_mentions']);
+    assertSame([['title' => 'T', 'timestamp' => '2026-01-02T03:04:05+00:00']], $payload['embeds']);
+});
+
+test('a malformed _extra is ignored', function () {
+    foreach (['x', 5, true, [[]], ['tts' => null]] as $extra) {
+        assertSame(['allowed_mentions' => ['parse' => []]], DiscordPayload::fromForm([DiscordPayload::EXTRA => $extra] + discordEmptyForm()));
+    }
+});

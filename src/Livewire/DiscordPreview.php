@@ -7,9 +7,9 @@ use App\Extensions\Webhooks\WebhookPreview;
 use App\Models\WebhookConfiguration;
 use Illuminate\Support\Carbon;
 use Illuminate\View\View;
-use JoanFo\DiscordWebhooks\Support\EmbedColor;
+use JoanFo\DiscordWebhooks\Support\Color;
+use JoanFo\DiscordWebhooks\Support\DiscordPayload;
 use JoanFo\DiscordWebhooks\Support\PayloadRenderer;
-use JoanFo\DiscordWebhooks\Support\Url;
 
 class DiscordPreview extends WebhookPreview
 {
@@ -19,25 +19,28 @@ class DiscordPreview extends WebhookPreview
     private static ?string $css = null;
 
     /**
-     * Substitutes inside each string value rather than in the JSON text, so sample or event
-     * values with quotes or newlines cannot break the preview. Not sanitised on purpose: the
-     * form state still holds `#hex` colours and `has_timestamp`, which processEmbeds() reads.
+     * Exactly what would be delivered: the live form state is first collapsed the way saving
+     * does (colours become integers, unticked checkboxes disappear), or the stored payload is
+     * used, and then rendered and sanitised with the sample event data like a real delivery.
+     * The preview therefore shows the default content, drops what Discord would drop and
+     * truncates what Discord would reject.
+     *
+     * The live state only holds the keys getPreviewFields() asks for. The rest (thread name,
+     * flags, mentions) has no visible effect on a message, so fromForm() just sees it empty.
      *
      * @return array<string, mixed>
      */
     protected function resolvePayload(): array
     {
-        $payload = $this->formPayload ?? $this->record?->payload;
-
-        if (blank($payload) || !is_array($payload)) {
-            return [];
-        }
+        $payload = $this->formPayload !== null
+            ? DiscordPayload::fromForm($this->formPayload)
+            : $this->record?->payload;
 
         $sampleData = $this->resolveScope() === WebhookScope::Server
             ? WebhookConfiguration::getServerWebhookSampleData()
             : WebhookConfiguration::getWebhookSampleData();
 
-        return PayloadRenderer::render($payload, $sampleData);
+        return PayloadRenderer::prepare(is_array($payload) ? $payload : [], $sampleData, now());
     }
 
     public function render(): View
@@ -65,98 +68,60 @@ class DiscordPreview extends WebhookPreview
     }
 
     /**
+     * Everything in the prepared payload is already valid, limited and escaped for output
+     * by the view, so this only reshapes it for display.
+     *
      * @return array{
      *     content: string|null,
      *     sender: array{name: string, avatar: string},
-     *     embeds: array<int, mixed>,
+     *     embeds: array<int, array<string, mixed>>,
      *     getTime: callable
      * }
      */
-    public function getViewData(): array
+    protected function getViewData(): array
     {
         $data = $this->resolvePayload();
 
         return [
-            'content' => $this->text(data_get($data, 'content')),
+            'content' => $data['content'] ?? null,
             'sender' => [
-                'name' => $this->text(data_get($data, 'username')) ?? 'Pelican',
-                'avatar' => $this->safeUrl(data_get($data, 'avatar_url')) ?? asset('pelican.svg'),
+                'name' => $data['username'] ?? 'Pelican',
+                'avatar' => $data['avatar_url'] ?? asset('pelican.svg'),
             ],
-            'embeds' => $this->processEmbeds(data_get($data, 'embeds', [])),
+            'embeds' => array_map($this->processEmbed(...), $data['embeds'] ?? []),
             'getTime' => fn () => now()->format('H:i'),
         ];
     }
 
-    /** @return array<int, array<string, mixed>> */
-    private function processEmbeds(mixed $embeds): array
-    {
-        return collect($embeds)
-            ->filter(fn (mixed $embed) => is_array($embed))
-            ->take(10)
-            ->map(function (array $embed): array {
-                if (!isset($embed['timestamp']) && !empty($embed['has_timestamp'])) {
-                    $embed['timestamp'] = now()->toIso8601String();
-                }
-
-                if (isset($embed['timestamp'])) {
-                    try {
-                        $embed['timestamp'] = Carbon::parse($embed['timestamp'])->format('M j, Y H:i');
-                    } catch (\Throwable) {
-                        unset($embed['timestamp']);
-                    }
-                }
-
-                $embed['view'] = [
-                    'author_name' => $this->text($embed['author']['name'] ?? null),
-                    'author_url' => $this->safeUrl($embed['author']['url'] ?? null),
-                    'author_icon' => $this->safeUrl($embed['author']['icon_url'] ?? null),
-                    'title' => $this->text($embed['title'] ?? null),
-                    'title_url' => $this->safeUrl($embed['url'] ?? null),
-                    'description' => $this->text($embed['description'] ?? null),
-                    'fields' => $this->processFields($embed['fields'] ?? []),
-                    'image' => $this->safeUrl($embed['image']['url'] ?? null),
-                    'thumbnail' => $this->safeUrl($embed['thumbnail']['url'] ?? null),
-                    'footer_text' => $this->text($embed['footer']['text'] ?? null),
-                    'footer_icon' => $this->safeUrl($embed['footer']['icon_url'] ?? null),
-                    'timestamp' => $embed['timestamp'] ?? null,
-                    'color_style' => 'border-left-color: ' . (EmbedColor::toCss($embed['color'] ?? null) ?? '#1e1f22'),
-                ];
-
-                return $embed;
-            })
-            ->values()
-            ->all();
-    }
-
-    /** @return array<int, array{name: string, value: string, inline: bool}> */
-    private function processFields(mixed $fields): array
-    {
-        return collect(is_array($fields) ? $fields : [])
-            ->filter(fn (mixed $field) => is_array($field))
-            ->map(fn (array $field): array => [
-                'name' => $this->text($field['name'] ?? null) ?? '',
-                'value' => $this->text($field['value'] ?? null) ?? '',
-                'inline' => !empty($field['inline']),
-            ])
-            ->values()
-            ->all();
-    }
-
     /**
-     * Only scalar values are rendered as text, so a malformed payload (an array where a string
-     * is expected) cannot break the escaping in the view.
+     * @param  array<string, mixed>  $embed
+     * @return array<string, mixed>
      */
-    private function text(mixed $value): ?string
+    private function processEmbed(array $embed): array
     {
-        if (is_string($value)) {
-            return $value === '' ? null : $value;
-        }
+        $color = Color::toHex($embed['color'] ?? null);
+        $timestamp = isset($embed['timestamp'])
+            ? Carbon::parse($embed['timestamp'])->setTimezone(now()->getTimezone())->format('M j, Y H:i')
+            : null;
 
-        return is_int($value) || is_float($value) ? (string) $value : null;
-    }
-
-    private function safeUrl(mixed $url): ?string
-    {
-        return Url::isHttp($url) ? $url : null;
+        return [
+            'author_name' => $embed['author']['name'] ?? null,
+            'author_url' => $embed['author']['url'] ?? null,
+            'author_icon' => $embed['author']['icon_url'] ?? null,
+            'title' => $embed['title'] ?? null,
+            'title_url' => $embed['url'] ?? null,
+            'description' => $embed['description'] ?? null,
+            'fields' => array_map(fn (array $field): array => [
+                'name' => $field['name'],
+                'value' => $field['value'],
+                'inline' => ($field['inline'] ?? false) === true,
+            ], $embed['fields'] ?? []),
+            'image' => $embed['image']['url'] ?? null,
+            'thumbnail' => $embed['thumbnail']['url'] ?? null,
+            'footer_text' => $embed['footer']['text'] ?? null,
+            'footer_icon' => $embed['footer']['icon_url'] ?? null,
+            'timestamp' => $timestamp,
+            'color_style' => 'border-left-color: ' . ($color ?? '#1e1f22'),
+        ];
     }
 }

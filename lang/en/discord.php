@@ -8,8 +8,9 @@ return [
         'username' => 'Username',
         'avatar_url' => 'Avatar URL',
         'forum_thread' => 'Forum Thread Name',
+        'forum_thread_text' => 'Only works for forum and media channels, where it names the new thread. Discord rejects the message in any other channel.',
         'suppress_embeds' => 'Suppress Embeds',
-        'suppress_embeds_text' => 'Do not include any embeds when serializing this message',
+        'suppress_embeds_text' => 'Hides the link previews Discord generates for URLs in the message text. It has no effect on embeds configured here: when a message has embeds, this flag is cleared on delivery.',
         'suppress_notifications' => 'Suppress Notifications',
         'suppress_notifications_text' => 'This message will not trigger push and desktop notifications',
     ],
@@ -42,5 +43,6 @@ return [
     'validation' => [
         'url' => 'The :attribute must be a valid http or https URL. {{variables}} are allowed.',
         'color' => 'The :attribute must be a hex colour such as #5865f2.',
+        'username' => 'The :attribute must not contain any of these words, Discord rejects them: :words.',
     ],
 ];

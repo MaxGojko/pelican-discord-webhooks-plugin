@@ -17,41 +17,6 @@ use Stringable;
  */
 final class PayloadRenderer
 {
-    private const LIMIT_CONTENT = 2000;
-
-    private const LIMIT_USERNAME = 80;
-
-    private const LIMIT_THREAD_NAME = 100;
-
-    private const LIMIT_EMBED_TITLE = 256;
-
-    private const LIMIT_EMBED_DESCRIPTION = 4096;
-
-    private const LIMIT_AUTHOR_NAME = 256;
-
-    private const LIMIT_FOOTER_TEXT = 2048;
-
-    private const LIMIT_FIELD_NAME = 256;
-
-    private const LIMIT_FIELD_VALUE = 1024;
-
-    private const MAX_EMBEDS = 10;
-
-    private const MAX_FIELDS = 25;
-
-    /** Combined size of all embed text Discord accepts in one message */
-    private const MAX_EMBED_TOTAL = 6000;
-
-    private const MAX_MENTION_IDS = 100;
-
-    /** Discord flag: SUPPRESS_EMBEDS */
-    private const FLAG_SUPPRESS_EMBEDS = 1 << 2;
-
-    /** Discord flag: SUPPRESS_NOTIFICATIONS */
-    private const FLAG_SUPPRESS_NOTIFICATIONS = 1 << 12;
-
-    private const ALLOWED_PARSE = ['roles', 'users', 'everyone'];
-
     private const ELLIPSIS = '…';
 
     /**
@@ -101,19 +66,21 @@ final class PayloadRenderer
      */
     public static function sanitize(array $payload, array $eventData, DateTimeInterface $now): array
     {
-        $payload = self::compact($payload);
-        $out = $payload;
+        $payload = PayloadArray::withoutBlank($payload);
+        $out = array_intersect_key($payload, array_flip(Discord::PAYLOAD_KEYS));
 
-        foreach (['content' => self::LIMIT_CONTENT, 'username' => self::LIMIT_USERNAME, 'thread_name' => self::LIMIT_THREAD_NAME] as $key => $limit) {
+        foreach (['content' => Discord::LIMIT_CONTENT, 'username' => Discord::LIMIT_USERNAME, 'thread_name' => Discord::LIMIT_THREAD_NAME] as $key => $limit) {
             self::assign($out, $key, self::text($payload[$key] ?? null, $limit));
         }
 
         // Discord refuses usernames containing these, so fall back to the webhook's own name
-        if (isset($out['username']) && (mb_stripos($out['username'], 'discord') !== false || mb_stripos($out['username'], 'clyde') !== false)) {
+        if (isset($out['username']) && !Discord::isAllowedUsername($out['username'])) {
             unset($out['username']);
         }
 
         self::assign($out, 'avatar_url', self::url($payload['avatar_url'] ?? null));
+        self::assign($out, 'tts', self::bool($payload['tts'] ?? null));
+        self::assign($out, 'applied_tags', self::appliedTags($payload['applied_tags'] ?? null));
 
         $embeds = self::embeds($payload['embeds'] ?? null, $now);
         if ($embeds !== []) {
@@ -133,7 +100,7 @@ final class PayloadRenderer
             $event = $eventData['event'] ?? null;
             $event = (is_string($event) || is_int($event) || $event instanceof Stringable) && trim((string) $event) !== '' ? (string) $event : 'unknown';
 
-            $out['content'] = self::truncate('Pelican webhook event: ' . $event, self::LIMIT_CONTENT);
+            $out['content'] = self::truncate('Pelican webhook event: ' . $event, Discord::LIMIT_CONTENT);
         }
 
         return $out;
@@ -144,7 +111,7 @@ final class PayloadRenderer
      */
     private static function renderString(string $subject, array $eventData): string
     {
-        return preg_replace_callback(
+        $rendered = preg_replace_callback(
             '/{{(.*?)}}/',
             function (array $matches) use ($eventData): string {
                 $path = trim($matches[1]);
@@ -154,6 +121,10 @@ final class PayloadRenderer
             },
             $subject
         ) ?? $subject;
+
+        // Event data is not always valid UTF-8 and json_encode() refuses the whole payload
+        // over a single bad byte
+        return mb_scrub($rendered, 'UTF-8');
     }
 
     /**
@@ -191,32 +162,6 @@ final class PayloadRenderer
             $value instanceof Stringable, is_object($value) && method_exists($value, '__toString') => (string) $value,
             default => json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) ?: '',
         };
-    }
-
-    /**
-     * Recursively remove null, blank string and empty array values. Zero and false stay.
-     *
-     * @param  array<mixed, mixed>  $values
-     * @return array<mixed, mixed>
-     */
-    private static function compact(array $values): array
-    {
-        $result = [];
-
-        foreach ($values as $key => $value) {
-            if (is_array($value)) {
-                $value = self::compact($value);
-                if ($value === []) {
-                    continue;
-                }
-            } elseif ($value === null || (is_string($value) && trim($value) === '')) {
-                continue;
-            }
-
-            $result[$key] = $value;
-        }
-
-        return $result;
     }
 
     /** @param  array<string, mixed>  $target */
@@ -293,7 +238,7 @@ final class PayloadRenderer
             }
 
             $result[] = $embed;
-            if (count($result) >= self::MAX_EMBEDS) {
+            if (count($result) >= Discord::MAX_EMBEDS) {
                 break;
             }
         }
@@ -309,13 +254,12 @@ final class PayloadRenderer
      */
     private static function embed(array $embed, DateTimeInterface $now): ?array
     {
-        $out = $embed;
-        unset($out['has_timestamp']);
+        $out = array_intersect_key($embed, array_flip(Discord::EMBED_KEYS));
 
-        self::assign($out, 'title', self::text($embed['title'] ?? null, self::LIMIT_EMBED_TITLE));
-        self::assign($out, 'description', self::text($embed['description'] ?? null, self::LIMIT_EMBED_DESCRIPTION));
+        self::assign($out, 'title', self::text($embed['title'] ?? null, Discord::LIMIT_EMBED_TITLE));
+        self::assign($out, 'description', self::text($embed['description'] ?? null, Discord::LIMIT_EMBED_DESCRIPTION));
         self::assign($out, 'url', self::url($embed['url'] ?? null));
-        self::assign($out, 'color', array_key_exists('color', $embed) ? self::color($embed['color']) : null);
+        self::assign($out, 'color', Color::parse($embed['color'] ?? null));
         self::assign($out, 'timestamp', self::timestamp($embed['timestamp'] ?? null));
 
         if (filter_var($embed['has_timestamp'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
@@ -323,7 +267,7 @@ final class PayloadRenderer
         }
 
         $author = is_array($embed['author'] ?? null) ? $embed['author'] : [];
-        $name = self::text($author['name'] ?? null, self::LIMIT_AUTHOR_NAME);
+        $name = self::text($author['name'] ?? null, Discord::LIMIT_AUTHOR_NAME);
         unset($out['author']);
         if ($name !== null) {
             $out['author'] = array_filter([
@@ -334,7 +278,7 @@ final class PayloadRenderer
         }
 
         $footer = is_array($embed['footer'] ?? null) ? $embed['footer'] : [];
-        $text = self::text($footer['text'] ?? null, self::LIMIT_FOOTER_TEXT);
+        $text = self::text($footer['text'] ?? null, Discord::LIMIT_FOOTER_TEXT);
         unset($out['footer']);
         if ($text !== null) {
             $out['footer'] = array_filter([
@@ -357,8 +301,8 @@ final class PayloadRenderer
                 continue;
             }
 
-            $fieldName = self::text($field['name'] ?? null, self::LIMIT_FIELD_NAME);
-            $fieldValue = self::text($field['value'] ?? null, self::LIMIT_FIELD_VALUE);
+            $fieldName = self::text($field['name'] ?? null, Discord::LIMIT_FIELD_NAME);
+            $fieldValue = self::text($field['value'] ?? null, Discord::LIMIT_FIELD_VALUE);
             if ($fieldName === null || $fieldValue === null) {
                 continue;
             }
@@ -370,7 +314,7 @@ final class PayloadRenderer
             }
 
             $fields[] = $entry;
-            if (count($fields) >= self::MAX_FIELDS) {
+            if (count($fields) >= Discord::MAX_FIELDS) {
                 break;
             }
         }
@@ -389,7 +333,8 @@ final class PayloadRenderer
     private static function hasContent(array $embed): bool
     {
         foreach (['title', 'description', 'fields', 'author', 'image', 'thumbnail', 'footer'] as $key) {
-            if (!empty($embed[$key])) {
+            // isset() on purpose: a title of "0" is content, and keys are unset when blank
+            if (isset($embed[$key])) {
                 return true;
             }
         }
@@ -397,25 +342,30 @@ final class PayloadRenderer
         return false;
     }
 
-    private static function color(mixed $value): ?int
+    private static function bool(mixed $value): ?bool
     {
-        if (is_float($value) && floor($value) === $value) {
-            $value = (int) $value;
+        return is_scalar($value) ? filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) : null;
+    }
+
+    /**
+     * Forum tag ids: unique digit strings, at most as many as Discord allows.
+     *
+     * @return list<string>|null
+     */
+    private static function appliedTags(mixed $value): ?array
+    {
+        if (!is_array($value)) {
+            return null;
         }
 
-        if (is_string($value)) {
-            $value = trim($value);
-
-            if (preg_match('/^#([0-9a-f]{6})$/i', $value, $matches) === 1) {
-                $value = (int) hexdec($matches[1]);
-            } elseif (preg_match('/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i', $value, $matches) === 1) {
-                $value = (int) hexdec($matches[1] . $matches[1] . $matches[2] . $matches[2] . $matches[3] . $matches[3]);
-            } elseif (preg_match('/^\d{1,8}$/', $value) === 1) {
-                $value = (int) $value;
+        $ids = [];
+        foreach ($value as $id) {
+            if ((is_string($id) || is_int($id)) && preg_match('/\A\d{1,20}\z/', (string) $id) === 1 && !in_array((string) $id, $ids, true)) {
+                $ids[] = (string) $id;
             }
         }
 
-        return is_int($value) && $value >= 0 && $value <= 0xFFFFFF ? $value : null;
+        return $ids === [] ? null : array_slice($ids, 0, Discord::MAX_APPLIED_TAGS);
     }
 
     private static function timestamp(mixed $value): ?string
@@ -434,11 +384,11 @@ final class PayloadRenderer
     private static function flags(mixed $value, bool $hasEmbeds): int
     {
         $flags = is_numeric($value) || is_bool($value) ? (int) $value : 0;
-        $flags &= self::FLAG_SUPPRESS_EMBEDS | self::FLAG_SUPPRESS_NOTIFICATIONS;
+        $flags &= Discord::FLAGS_ALLOWED;
 
         // Embeds were requested, so never let SUPPRESS_EMBEDS hide them
         if ($hasEmbeds) {
-            $flags &= ~self::FLAG_SUPPRESS_EMBEDS;
+            $flags &= ~Discord::FLAG_SUPPRESS_EMBEDS;
         }
 
         return $flags;
@@ -458,7 +408,7 @@ final class PayloadRenderer
 
         $parse = [];
         foreach (is_array($value['parse'] ?? null) ? $value['parse'] : [] as $type) {
-            if (is_string($type) && in_array($type, self::ALLOWED_PARSE, true) && !in_array($type, $parse, true)) {
+            if (is_string($type) && in_array($type, Discord::MENTION_TYPES, true) && !in_array($type, $parse, true)) {
                 $parse[] = $type;
             }
         }
@@ -475,7 +425,7 @@ final class PayloadRenderer
             }
 
             if ($ids !== []) {
-                $result[$key] = array_slice($ids, 0, self::MAX_MENTION_IDS);
+                $result[$key] = array_slice($ids, 0, Discord::MAX_MENTION_IDS);
                 $parse = array_values(array_diff($parse, [$key]));
             }
         }
@@ -502,13 +452,13 @@ final class PayloadRenderer
     {
         $total = self::totalLength($embeds);
 
-        for ($i = count($embeds) - 1; $i >= 0 && $total > self::MAX_EMBED_TOTAL; $i--) {
+        for ($i = count($embeds) - 1; $i >= 0 && $total > Discord::MAX_EMBED_TOTAL; $i--) {
             if (!isset($embeds[$i]['description'])) {
                 continue;
             }
 
             $length = mb_strlen($embeds[$i]['description'], 'UTF-8');
-            $shortened = self::truncate($embeds[$i]['description'], max(0, $length - ($total - self::MAX_EMBED_TOTAL)));
+            $shortened = self::truncate($embeds[$i]['description'], max(0, $length - ($total - Discord::MAX_EMBED_TOTAL)));
 
             if ($shortened === '') {
                 unset($embeds[$i]['description']);
@@ -519,18 +469,18 @@ final class PayloadRenderer
             $total = self::totalLength($embeds);
         }
 
-        for ($i = count($embeds) - 1; $i >= 0 && $total > self::MAX_EMBED_TOTAL; $i--) {
-            while (!empty($embeds[$i]['fields']) && $total > self::MAX_EMBED_TOTAL) {
+        for ($i = count($embeds) - 1; $i >= 0 && $total > Discord::MAX_EMBED_TOTAL; $i--) {
+            while (($embeds[$i]['fields'] ?? []) !== [] && $total > Discord::MAX_EMBED_TOTAL) {
                 array_pop($embeds[$i]['fields']);
                 $total = self::totalLength($embeds);
             }
 
-            if (empty($embeds[$i]['fields'])) {
+            if (($embeds[$i]['fields'] ?? []) === []) {
                 unset($embeds[$i]['fields']);
             }
         }
 
-        while (count($embeds) > 1 && $total > self::MAX_EMBED_TOTAL) {
+        while (count($embeds) > 1 && $total > Discord::MAX_EMBED_TOTAL) {
             array_pop($embeds);
             $total = self::totalLength($embeds);
         }

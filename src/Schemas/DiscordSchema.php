@@ -11,6 +11,7 @@ use Closure;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\ColorPicker;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -20,6 +21,7 @@ use Filament\Schemas\Components\Utilities\Get;
 use Illuminate\Http\Client\Response;
 use JoanFo\DiscordWebhooks\Livewire\DiscordPreview;
 use JoanFo\DiscordWebhooks\Support\Color;
+use JoanFo\DiscordWebhooks\Support\Discord;
 use JoanFo\DiscordWebhooks\Support\DiscordEndpoint;
 use JoanFo\DiscordWebhooks\Support\DiscordPayload;
 use JoanFo\DiscordWebhooks\Support\PayloadRenderer;
@@ -27,19 +29,10 @@ use JoanFo\DiscordWebhooks\Support\Url;
 
 class DiscordSchema extends BaseSchema
 {
-    /** Discord flag: SUPPRESS_EMBEDS */
-    private const SUPPRESS_EMBEDS = 1 << 2;
-
-    /** Discord flag: SUPPRESS_NOTIFICATIONS */
-    private const SUPPRESS_NOTIFICATIONS = 1 << 12;
-
     private const TOO_MANY_REQUESTS = 429;
 
     /** Used when Discord rate limits without saying for how long */
     private const DEFAULT_RETRY_SECONDS = 5;
-
-    /** Fields collapsed into (and expanded back out of) the stored payload. */
-    private const PAYLOAD_FIELDS = DiscordPayload::FIELDS;
 
     public function getId(): string
     {
@@ -66,7 +59,13 @@ class DiscordSchema extends BaseSchema
         return DiscordPreview::class;
     }
 
-    /** @return string[] */
+    /**
+     * The live form state the preview receives. Thread name, flags, mentions and the hidden
+     * `_extra` data do not change what a message looks like, and an embed's own `_extra`
+     * (its timestamp) travels inside `embeds`.
+     *
+     * @return string[]
+     */
     public function getPreviewFields(): array
     {
         return ['content', 'username', 'avatar_url', 'embeds'];
@@ -87,35 +86,45 @@ class DiscordSchema extends BaseSchema
     public function getPayloadRules(): array
     {
         $url = self::httpUrlRule();
+        $snowflake = 'regex:/\A\d{1,20}\z/';
 
         return [
-            'content' => ['nullable', 'string', 'max:2000'],
-            'username' => ['nullable', 'string', 'max:80'],
+            'content' => ['nullable', 'string', 'max:' . Discord::LIMIT_CONTENT],
+            'username' => ['nullable', 'string', 'max:' . Discord::LIMIT_USERNAME, self::usernameRule()],
             'avatar_url' => ['nullable', 'string', $url],
-            'thread_name' => ['nullable', 'string', 'max:100'],
+            'tts' => ['nullable', 'boolean'],
+            'thread_name' => ['nullable', 'string', 'max:' . Discord::LIMIT_THREAD_NAME],
+            'applied_tags' => ['nullable', 'array', 'max:' . Discord::MAX_APPLIED_TAGS],
+            'applied_tags.*' => [$snowflake],
             'flags' => ['nullable', 'integer', 'min:0'],
             'allowed_mentions' => ['nullable', 'array'],
             'allowed_mentions.parse' => ['nullable', 'array'],
-            'allowed_mentions.parse.*' => ['string', 'in:' . implode(',', DiscordPayload::MENTION_TYPES)],
-            'embeds' => ['nullable', 'array', 'max:10'],
+            'allowed_mentions.parse.*' => ['string', 'in:' . implode(',', Discord::MENTION_TYPES)],
+            'allowed_mentions.users' => ['nullable', 'array', 'max:' . Discord::MAX_MENTION_IDS],
+            'allowed_mentions.users.*' => [$snowflake],
+            'allowed_mentions.roles' => ['nullable', 'array', 'max:' . Discord::MAX_MENTION_IDS],
+            'allowed_mentions.roles.*' => [$snowflake],
+            'allowed_mentions.replied_user' => ['nullable', 'boolean'],
+            'embeds' => ['nullable', 'array', 'max:' . Discord::MAX_EMBEDS],
             'embeds.*' => ['array'],
-            'embeds.*.title' => ['nullable', 'string', 'max:256'],
-            'embeds.*.description' => ['nullable', 'string', 'max:4096'],
+            'embeds.*.title' => ['nullable', 'string', 'max:' . Discord::LIMIT_EMBED_TITLE],
+            'embeds.*.description' => ['nullable', 'string', 'max:' . Discord::LIMIT_EMBED_DESCRIPTION],
             'embeds.*.url' => ['nullable', 'string', $url],
+            'embeds.*.timestamp' => ['nullable', 'string', 'date'],
             'embeds.*.color' => ['nullable', 'integer', 'min:0', 'max:' . Color::MAX],
             'embeds.*.has_timestamp' => ['nullable', 'boolean'],
             'embeds.*.author' => ['nullable', 'array'],
-            'embeds.*.author.name' => ['nullable', 'string', 'max:256'],
+            'embeds.*.author.name' => ['nullable', 'string', 'max:' . Discord::LIMIT_AUTHOR_NAME],
             'embeds.*.author.url' => ['nullable', 'string', $url],
             'embeds.*.author.icon_url' => ['nullable', 'string', $url],
             'embeds.*.image.url' => ['nullable', 'string', $url],
             'embeds.*.thumbnail.url' => ['nullable', 'string', $url],
             'embeds.*.footer' => ['nullable', 'array'],
-            'embeds.*.footer.text' => ['nullable', 'string', 'max:2048'],
+            'embeds.*.footer.text' => ['nullable', 'string', 'max:' . Discord::LIMIT_FOOTER_TEXT],
             'embeds.*.footer.icon_url' => ['nullable', 'string', $url],
-            'embeds.*.fields' => ['nullable', 'array', 'max:25'],
-            'embeds.*.fields.*.name' => ['required', 'string', 'max:256'],
-            'embeds.*.fields.*.value' => ['required', 'string', 'max:1024'],
+            'embeds.*.fields' => ['nullable', 'array', 'max:' . Discord::MAX_FIELDS],
+            'embeds.*.fields.*.name' => ['required', 'string', 'max:' . Discord::LIMIT_FIELD_NAME],
+            'embeds.*.fields.*.value' => ['required', 'string', 'max:' . Discord::LIMIT_FIELD_VALUE],
             'embeds.*.fields.*.inline' => ['nullable', 'boolean'],
         ];
     }
@@ -149,7 +158,8 @@ class DiscordSchema extends BaseSchema
                 ->schema([
                     TextInput::make('username')
                         ->live(debounce: 500)
-                        ->maxLength(80)
+                        ->maxLength(Discord::LIMIT_USERNAME)
+                        ->rule(fn (): Closure => self::usernameRule())
                         ->label(trans('discord-webhooks::discord.message.username')),
                     $this->urlInput('avatar_url', 'discord-webhooks::discord.message.avatar_url'),
                 ]),
@@ -161,20 +171,21 @@ class DiscordSchema extends BaseSchema
                         ->label(trans('discord-webhooks::discord.message.message'))
                         ->live(debounce: 500)
                         ->rows(4)
-                        ->maxLength(2000)
+                        ->maxLength(Discord::LIMIT_CONTENT)
                         ->required(fn (Get $get) => blank($get('embeds'))),
                     TextInput::make('thread_name')
                         ->label(trans('discord-webhooks::discord.message.forum_thread'))
-                        ->maxLength(100),
+                        ->helperText(trans('discord-webhooks::discord.message.forum_thread_text'))
+                        ->maxLength(Discord::LIMIT_THREAD_NAME),
                     CheckboxList::make('flags')
                         ->label(trans('discord-webhooks::discord.embed.flags'))
                         ->options([
-                            self::SUPPRESS_EMBEDS => trans('discord-webhooks::discord.message.suppress_embeds'),
-                            self::SUPPRESS_NOTIFICATIONS => trans('discord-webhooks::discord.message.suppress_notifications'),
+                            Discord::FLAG_SUPPRESS_EMBEDS => trans('discord-webhooks::discord.message.suppress_embeds'),
+                            Discord::FLAG_SUPPRESS_NOTIFICATIONS => trans('discord-webhooks::discord.message.suppress_notifications'),
                         ])
                         ->descriptions([
-                            self::SUPPRESS_EMBEDS => trans('discord-webhooks::discord.message.suppress_embeds_text'),
-                            self::SUPPRESS_NOTIFICATIONS => trans('discord-webhooks::discord.message.suppress_notifications_text'),
+                            Discord::FLAG_SUPPRESS_EMBEDS => trans('discord-webhooks::discord.message.suppress_embeds_text'),
+                            Discord::FLAG_SUPPRESS_NOTIFICATIONS => trans('discord-webhooks::discord.message.suppress_notifications_text'),
                         ]),
                     CheckboxList::make('allowed_mentions')
                         ->label(trans('discord-webhooks::discord.embed.allowed_mentions'))
@@ -183,6 +194,9 @@ class DiscordSchema extends BaseSchema
                             'users' => trans('discord-webhooks::discord.embed.users'),
                             'everyone' => trans('discord-webhooks::discord.embed.everyone'),
                         ]),
+                    // Payload data without a field of its own (tts, tags, mention ids), kept so
+                    // saving the form does not delete what an API client stored
+                    Hidden::make(DiscordPayload::EXTRA),
                 ]),
             Repeater::make('embeds')
                 ->live(debounce: 500)
@@ -192,7 +206,7 @@ class DiscordSchema extends BaseSchema
                 ->reorderable()
                 ->columnSpanFull()
                 ->collapsible()
-                ->maxItems(10)
+                ->maxItems(Discord::MAX_EMBEDS)
                 ->schema([
                     Section::make(trans('discord-webhooks::discord.embed.author'))
                         ->collapsible()
@@ -201,7 +215,7 @@ class DiscordSchema extends BaseSchema
                             TextInput::make('author.name')
                                 ->live(debounce: 500)
                                 ->label(trans('discord-webhooks::discord.embed.author'))
-                                ->maxLength(256)
+                                ->maxLength(Discord::LIMIT_AUTHOR_NAME)
                                 ->required(fn (Get $get) => filled($get('author.url')) || filled($get('author.icon_url'))),
                             $this->urlInput('author.url', 'discord-webhooks::discord.embed.author_url'),
                             $this->urlInput('author.icon_url', 'discord-webhooks::discord.embed.author_icon_url'),
@@ -213,12 +227,12 @@ class DiscordSchema extends BaseSchema
                             TextInput::make('title')
                                 ->live(debounce: 500)
                                 ->label(trans('discord-webhooks::discord.embed.title'))
-                                ->maxLength(256)
+                                ->maxLength(Discord::LIMIT_EMBED_TITLE)
                                 ->required(fn (Get $get) => blank($get('description'))),
                             Textarea::make('description')
                                 ->live(debounce: 500)
                                 ->label(trans('discord-webhooks::discord.embed.body'))
-                                ->maxLength(4096)
+                                ->maxLength(Discord::LIMIT_EMBED_DESCRIPTION)
                                 ->required(fn (Get $get) => blank($get('title'))),
                             ColorPicker::make('color')
                                 ->live(debounce: 500)
@@ -245,7 +259,7 @@ class DiscordSchema extends BaseSchema
                             TextInput::make('footer.text')
                                 ->live(debounce: 500)
                                 ->label(trans('discord-webhooks::discord.embed.footer'))
-                                ->maxLength(2048)
+                                ->maxLength(Discord::LIMIT_FOOTER_TEXT)
                                 ->required(fn (Get $get) => filled($get('footer.icon_url'))),
                             Checkbox::make('has_timestamp')
                                 ->live(debounce: 500)
@@ -260,24 +274,26 @@ class DiscordSchema extends BaseSchema
                                 ->reorderable()
                                 ->addActionLabel(trans('discord-webhooks::discord.embed.add_field'))
                                 ->collapsible()
-                                ->maxItems(25)
+                                ->maxItems(Discord::MAX_FIELDS)
                                 ->schema([
                                     TextInput::make('name')
                                         ->live(debounce: 500)
                                         ->label(trans('discord-webhooks::discord.embed.field_name'))
-                                        ->maxLength(256)
+                                        ->maxLength(Discord::LIMIT_FIELD_NAME)
                                         ->required(),
                                     Textarea::make('value')
                                         ->live(debounce: 500)
                                         ->label(trans('discord-webhooks::discord.embed.field_value'))
                                         ->rows(4)
-                                        ->maxLength(1024)
+                                        ->maxLength(Discord::LIMIT_FIELD_VALUE)
                                         ->required(),
                                     Checkbox::make('inline')
                                         ->live(debounce: 500)
                                         ->label(trans('discord-webhooks::discord.embed.inline_field')),
                                 ]),
                         ]),
+                    // An embed's data without a field of its own (its timestamp)
+                    Hidden::make(DiscordPayload::EXTRA),
                 ]),
         ];
     }
@@ -288,15 +304,16 @@ class DiscordSchema extends BaseSchema
      */
     public function mutateFormDataBeforeSave(array $data): array
     {
-        // The API sends a ready made payload and none of the form fields, so there is
-        // nothing to collapse and rebuilding it from the missing fields would empty it
-        if (is_array($data['payload'] ?? null) && array_intersect_key($data, array_flip(self::PAYLOAD_FIELDS)) === []) {
+        // The API sends a ready made `payload` or only unrelated attributes, such as a PATCH
+        // renaming the webhook. Rebuilding the payload from form fields that were never sent
+        // would empty it, so only data that holds form fields is collapsed.
+        if (!DiscordPayload::hasFormFields($data)) {
             return $data;
         }
 
         $payload = DiscordPayload::fromForm($data);
 
-        foreach (self::PAYLOAD_FIELDS as $field) {
+        foreach (DiscordPayload::FIELDS as $field) {
             unset($data[$field]);
         }
 
@@ -344,6 +361,21 @@ class DiscordSchema extends BaseSchema
 
             if (!Url::isHttp($value)) {
                 $fail(trans('discord-webhooks::discord.validation.url'));
+            }
+        };
+    }
+
+    /**
+     * Laravel validation closure rejecting the names Discord refuses for a webhook
+     * username, which delivery would otherwise silently replace with the webhook's name.
+     */
+    private static function usernameRule(): Closure
+    {
+        return function (string $attribute, mixed $value, Closure $fail): void {
+            if (is_string($value) && !Discord::isAllowedUsernameTemplate($value)) {
+                $fail(trans('discord-webhooks::discord.validation.username', [
+                    'words' => implode(', ', Discord::FORBIDDEN_USERNAME_WORDS),
+                ]));
             }
         };
     }

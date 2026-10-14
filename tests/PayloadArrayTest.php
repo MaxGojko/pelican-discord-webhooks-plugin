@@ -37,12 +37,3 @@ test('PayloadArray::withoutBlank reindexes lists so they stay JSON arrays', func
 test('PayloadArray::withoutBlank keeps non-list keys', function () {
     assertSame([3 => 'x'], PayloadArray::withoutBlank([1 => null, 3 => 'x']));
 });
-
-test('PayloadArray::isBlank', function () {
-    foreach ([null, '', ' ', [], [null], [[''], ['' => null]]] as $blank) {
-        assertTrue(PayloadArray::isBlank($blank), 'should be blank ' . var_export($blank, true));
-    }
-    foreach ([0, '0', false, 'a', [0], ['a' => false]] as $filled) {
-        assertFalse(PayloadArray::isBlank($filled), 'should not be blank ' . var_export($filled, true));
-    }
-});
