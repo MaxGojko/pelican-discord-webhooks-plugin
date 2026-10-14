@@ -18,11 +18,11 @@ use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Illuminate\Http\Client\Response;
-use Illuminate\Support\Carbon;
 use JoanFo\DiscordWebhooks\Livewire\DiscordPreview;
 use JoanFo\DiscordWebhooks\Support\Color;
 use JoanFo\DiscordWebhooks\Support\DiscordEndpoint;
 use JoanFo\DiscordWebhooks\Support\DiscordPayload;
+use JoanFo\DiscordWebhooks\Support\PayloadRenderer;
 use JoanFo\DiscordWebhooks\Support\Url;
 
 class DiscordSchema extends BaseSchema
@@ -354,30 +354,8 @@ class DiscordSchema extends BaseSchema
      */
     public function preparePayload(WebhookConfiguration $webhookConfiguration, array $eventData): array
     {
-        $payload = json_encode($webhookConfiguration->payload) ?: '{}';
-        $data = json_decode($webhookConfiguration->replaceVars($eventData, $payload), true) ?? [];
+        $payload = $webhookConfiguration->payload;
 
-        $embeds = data_get($data, 'embeds');
-        if ($embeds) {
-            foreach ($embeds as &$embed) {
-                if (data_get($embed, 'has_timestamp')) {
-                    $embed['timestamp'] = Carbon::now();
-                    unset($embed['has_timestamp']);
-                }
-            }
-
-            $data['embeds'] = $embeds;
-
-            // Embeds were requested, so never let SUPPRESS_EMBEDS hide them
-            if (isset($data['flags'])) {
-                $data['flags'] &= ~self::SUPPRESS_EMBEDS;
-            }
-        }
-
-        if (isset($data['content']) && $data['content'] === '') {
-            unset($data['content']);
-        }
-
-        return $data;
+        return PayloadRenderer::prepare(is_array($payload) ? $payload : [], $eventData, now());
     }
 }

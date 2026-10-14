@@ -1,0 +1,562 @@
+<?php
+
+namespace JoanFo\DiscordWebhooks\Support;
+
+use ArrayAccess;
+use DateTimeImmutable;
+use DateTimeInterface;
+use DateTimeZone;
+use Stringable;
+
+/**
+ * Framework-free rendering and sanitising of the stored Discord payload template.
+ *
+ * Placeholders are substituted inside each string value, never in the JSON text, so a
+ * value containing quotes, newlines or backslashes cannot break or inject into the
+ * message. The rendered result is then trimmed down to what Discord accepts.
+ */
+final class PayloadRenderer
+{
+    private const LIMIT_CONTENT = 2000;
+
+    private const LIMIT_USERNAME = 80;
+
+    private const LIMIT_THREAD_NAME = 100;
+
+    private const LIMIT_EMBED_TITLE = 256;
+
+    private const LIMIT_EMBED_DESCRIPTION = 4096;
+
+    private const LIMIT_AUTHOR_NAME = 256;
+
+    private const LIMIT_FOOTER_TEXT = 2048;
+
+    private const LIMIT_FIELD_NAME = 256;
+
+    private const LIMIT_FIELD_VALUE = 1024;
+
+    private const MAX_EMBEDS = 10;
+
+    private const MAX_FIELDS = 25;
+
+    /** Combined size of all embed text Discord accepts in one message */
+    private const MAX_EMBED_TOTAL = 6000;
+
+    private const MAX_MENTION_IDS = 100;
+
+    /** Discord flag: SUPPRESS_EMBEDS */
+    private const FLAG_SUPPRESS_EMBEDS = 1 << 2;
+
+    /** Discord flag: SUPPRESS_NOTIFICATIONS */
+    private const FLAG_SUPPRESS_NOTIFICATIONS = 1 << 12;
+
+    private const ALLOWED_PARSE = ['roles', 'users', 'everyone'];
+
+    private const ELLIPSIS = '…';
+
+    /**
+     * Render, then sanitise. A missing template is treated as an empty one, which ends up
+     * as the default content message.
+     *
+     * @param  array<mixed, mixed>|null  $template
+     * @param  array<mixed, mixed>  $eventData
+     * @return array<string, mixed>
+     */
+    public static function prepare(?array $template, array $eventData, DateTimeInterface $now): array
+    {
+        return self::sanitize(self::render($template ?? [], $eventData), $eventData, $now);
+    }
+
+    /**
+     * Replace `{{ path }}` placeholders in every string value of the template. Array keys
+     * are left alone and non-string scalars pass through unchanged.
+     *
+     * @param  array<mixed, mixed>  $template
+     * @param  array<mixed, mixed>  $eventData
+     * @return array<mixed, mixed>
+     */
+    public static function render(array $template, array $eventData): array
+    {
+        $result = [];
+
+        foreach ($template as $key => $value) {
+            if (is_array($value)) {
+                $result[$key] = self::render($value, $eventData);
+            } elseif (is_string($value)) {
+                $result[$key] = self::renderString($value, $eventData);
+            } else {
+                $result[$key] = $value;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Make a rendered payload acceptable to Discord.
+     *
+     * @param  array<mixed, mixed>  $payload
+     * @param  array<mixed, mixed>  $eventData
+     * @return array<string, mixed>
+     */
+    public static function sanitize(array $payload, array $eventData, DateTimeInterface $now): array
+    {
+        $payload = self::compact($payload);
+        $out = $payload;
+
+        foreach (['content' => self::LIMIT_CONTENT, 'username' => self::LIMIT_USERNAME, 'thread_name' => self::LIMIT_THREAD_NAME] as $key => $limit) {
+            self::assign($out, $key, self::text($payload[$key] ?? null, $limit));
+        }
+
+        // Discord refuses usernames containing these, so fall back to the webhook's own name
+        if (isset($out['username']) && (mb_stripos($out['username'], 'discord') !== false || mb_stripos($out['username'], 'clyde') !== false)) {
+            unset($out['username']);
+        }
+
+        self::assign($out, 'avatar_url', self::url($payload['avatar_url'] ?? null));
+
+        $embeds = self::embeds($payload['embeds'] ?? null, $now);
+        if ($embeds !== []) {
+            $out['embeds'] = $embeds;
+        } else {
+            unset($out['embeds']);
+        }
+
+        if (array_key_exists('flags', $payload)) {
+            $flags = self::flags($payload['flags'], $embeds !== []);
+            self::assign($out, 'flags', $flags === 0 ? null : $flags);
+        }
+
+        $out['allowed_mentions'] = self::allowedMentions($payload['allowed_mentions'] ?? null);
+
+        if (!isset($out['content']) && $embeds === []) {
+            $event = $eventData['event'] ?? null;
+            $event = (is_string($event) || is_int($event) || $event instanceof Stringable) && trim((string) $event) !== '' ? (string) $event : 'unknown';
+
+            $out['content'] = self::truncate('Pelican webhook event: ' . $event, self::LIMIT_CONTENT);
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array<mixed, mixed>  $eventData
+     */
+    private static function renderString(string $subject, array $eventData): string
+    {
+        return preg_replace_callback(
+            '/{{(.*?)}}/',
+            function (array $matches) use ($eventData): string {
+                $path = trim($matches[1]);
+                $value = self::lookup($eventData, $path, $found);
+
+                return $found ? self::stringify($value) : $path;
+            },
+            $subject
+        ) ?? $subject;
+    }
+
+    /**
+     * Dot notation lookup into nested arrays and objects.
+     */
+    private static function lookup(mixed $target, string $path, ?bool &$found): mixed
+    {
+        $found = true;
+
+        foreach (explode('.', $path) as $segment) {
+            if (is_array($target) && array_key_exists($segment, $target)) {
+                $target = $target[$segment];
+            } elseif ($target instanceof ArrayAccess && $target->offsetExists($segment)) {
+                $target = $target[$segment];
+            } elseif (is_object($target) && isset($target->{$segment})) {
+                $target = $target->{$segment};
+            } else {
+                $found = false;
+
+                return null;
+            }
+        }
+
+        return $target;
+    }
+
+    private static function stringify(mixed $value): string
+    {
+        return match (true) {
+            is_string($value) => $value,
+            is_int($value), is_float($value) => (string) $value,
+            is_bool($value) => $value ? 'true' : 'false',
+            $value === null => '',
+            $value instanceof DateTimeInterface => $value->format(DATE_ATOM),
+            $value instanceof Stringable, is_object($value) && method_exists($value, '__toString') => (string) $value,
+            default => json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) ?: '',
+        };
+    }
+
+    /**
+     * Recursively remove null, blank string and empty array values. Zero and false stay.
+     *
+     * @param  array<mixed, mixed>  $values
+     * @return array<mixed, mixed>
+     */
+    private static function compact(array $values): array
+    {
+        $result = [];
+
+        foreach ($values as $key => $value) {
+            if (is_array($value)) {
+                $value = self::compact($value);
+                if ($value === []) {
+                    continue;
+                }
+            } elseif ($value === null || (is_string($value) && trim($value) === '')) {
+                continue;
+            }
+
+            $result[$key] = $value;
+        }
+
+        return $result;
+    }
+
+    /** @param  array<string, mixed>  $target */
+    private static function assign(array &$target, string $key, mixed $value): void
+    {
+        if ($value === null) {
+            unset($target[$key]);
+        } else {
+            $target[$key] = $value;
+        }
+    }
+
+    /**
+     * A scalar as a non-blank, valid UTF-8 string within the limit, otherwise null.
+     */
+    private static function text(mixed $value, int $limit): ?string
+    {
+        if (is_bool($value)) {
+            $value = $value ? 'true' : 'false';
+        } elseif (is_int($value) || is_float($value)) {
+            $value = (string) $value;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = mb_scrub($value, 'UTF-8');
+
+        return trim($value) === '' ? null : self::truncate($value, $limit);
+    }
+
+    private static function url(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return Url::isHttp($value) ? $value : null;
+    }
+
+    /**
+     * Multibyte safe; the ellipsis counts towards the limit.
+     */
+    private static function truncate(string $value, int $limit): string
+    {
+        if ($limit < 1) {
+            return '';
+        }
+
+        if (mb_strlen($value, 'UTF-8') <= $limit) {
+            return $value;
+        }
+
+        return mb_substr($value, 0, $limit - 1, 'UTF-8') . self::ELLIPSIS;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function embeds(mixed $embeds, DateTimeInterface $now): array
+    {
+        if (!is_array($embeds)) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($embeds as $embed) {
+            $embed = is_array($embed) ? self::embed($embed, $now) : null;
+            if ($embed === null) {
+                continue;
+            }
+
+            $result[] = $embed;
+            if (count($result) >= self::MAX_EMBEDS) {
+                break;
+            }
+        }
+
+        $result = self::fitEmbedTotal($result);
+
+        return array_values(array_filter($result, self::hasContent(...)));
+    }
+
+    /**
+     * @param  array<mixed, mixed>  $embed
+     * @return array<string, mixed>|null
+     */
+    private static function embed(array $embed, DateTimeInterface $now): ?array
+    {
+        $out = $embed;
+        unset($out['has_timestamp']);
+
+        self::assign($out, 'title', self::text($embed['title'] ?? null, self::LIMIT_EMBED_TITLE));
+        self::assign($out, 'description', self::text($embed['description'] ?? null, self::LIMIT_EMBED_DESCRIPTION));
+        self::assign($out, 'url', self::url($embed['url'] ?? null));
+        self::assign($out, 'color', array_key_exists('color', $embed) ? self::color($embed['color']) : null);
+        self::assign($out, 'timestamp', self::timestamp($embed['timestamp'] ?? null));
+
+        if (filter_var($embed['has_timestamp'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            $out['timestamp'] = DateTimeImmutable::createFromInterface($now)->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM);
+        }
+
+        $author = is_array($embed['author'] ?? null) ? $embed['author'] : [];
+        $name = self::text($author['name'] ?? null, self::LIMIT_AUTHOR_NAME);
+        unset($out['author']);
+        if ($name !== null) {
+            $out['author'] = array_filter([
+                'name' => $name,
+                'url' => self::url($author['url'] ?? null),
+                'icon_url' => self::url($author['icon_url'] ?? null),
+            ], fn (mixed $value) => $value !== null);
+        }
+
+        $footer = is_array($embed['footer'] ?? null) ? $embed['footer'] : [];
+        $text = self::text($footer['text'] ?? null, self::LIMIT_FOOTER_TEXT);
+        unset($out['footer']);
+        if ($text !== null) {
+            $out['footer'] = array_filter([
+                'text' => $text,
+                'icon_url' => self::url($footer['icon_url'] ?? null),
+            ], fn (mixed $value) => $value !== null);
+        }
+
+        foreach (['image', 'thumbnail'] as $key) {
+            $url = is_array($embed[$key] ?? null) ? self::url($embed[$key]['url'] ?? null) : null;
+            unset($out[$key]);
+            if ($url !== null) {
+                $out[$key] = ['url' => $url];
+            }
+        }
+
+        $fields = [];
+        foreach (is_array($embed['fields'] ?? null) ? $embed['fields'] : [] as $field) {
+            if (!is_array($field)) {
+                continue;
+            }
+
+            $fieldName = self::text($field['name'] ?? null, self::LIMIT_FIELD_NAME);
+            $fieldValue = self::text($field['value'] ?? null, self::LIMIT_FIELD_VALUE);
+            if ($fieldName === null || $fieldValue === null) {
+                continue;
+            }
+
+            $entry = ['name' => $fieldName, 'value' => $fieldValue];
+            $inline = array_key_exists('inline', $field) ? filter_var($field['inline'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) : null;
+            if ($inline !== null) {
+                $entry['inline'] = $inline;
+            }
+
+            $fields[] = $entry;
+            if (count($fields) >= self::MAX_FIELDS) {
+                break;
+            }
+        }
+
+        unset($out['fields']);
+        if ($fields !== []) {
+            $out['fields'] = $fields;
+        }
+
+        return self::hasContent($out) ? $out : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $embed
+     */
+    private static function hasContent(array $embed): bool
+    {
+        foreach (['title', 'description', 'fields', 'author', 'image', 'thumbnail', 'footer'] as $key) {
+            if (!empty($embed[$key])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function color(mixed $value): ?int
+    {
+        if (is_float($value) && floor($value) === $value) {
+            $value = (int) $value;
+        }
+
+        if (is_string($value)) {
+            $value = trim($value);
+
+            if (preg_match('/^#([0-9a-f]{6})$/i', $value, $matches) === 1) {
+                $value = (int) hexdec($matches[1]);
+            } elseif (preg_match('/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i', $value, $matches) === 1) {
+                $value = (int) hexdec($matches[1] . $matches[1] . $matches[2] . $matches[2] . $matches[3] . $matches[3]);
+            } elseif (preg_match('/^\d{1,8}$/', $value) === 1) {
+                $value = (int) $value;
+            }
+        }
+
+        return is_int($value) && $value >= 0 && $value <= 0xFFFFFF ? $value : null;
+    }
+
+    private static function timestamp(mixed $value): ?string
+    {
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return (new DateTimeImmutable($value))->format(DATE_ATOM);
+        } catch (\Exception) {
+            return null;
+        }
+    }
+
+    private static function flags(mixed $value, bool $hasEmbeds): int
+    {
+        $flags = is_numeric($value) || is_bool($value) ? (int) $value : 0;
+        $flags &= self::FLAG_SUPPRESS_EMBEDS | self::FLAG_SUPPRESS_NOTIFICATIONS;
+
+        // Embeds were requested, so never let SUPPRESS_EMBEDS hide them
+        if ($hasEmbeds) {
+            $flags &= ~self::FLAG_SUPPRESS_EMBEDS;
+        }
+
+        return $flags;
+    }
+
+    /**
+     * Without an explicit allowed_mentions Discord parses @everyone, @here, roles and users
+     * out of the text, so default to parsing nothing.
+     *
+     * @return array<string, mixed>
+     */
+    private static function allowedMentions(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return ['parse' => []];
+        }
+
+        $parse = [];
+        foreach (is_array($value['parse'] ?? null) ? $value['parse'] : [] as $type) {
+            if (is_string($type) && in_array($type, self::ALLOWED_PARSE, true) && !in_array($type, $parse, true)) {
+                $parse[] = $type;
+            }
+        }
+
+        $result = [];
+
+        // Discord rejects parsing a type and listing ids of that same type together
+        foreach (['users', 'roles'] as $key) {
+            $ids = [];
+            foreach (is_array($value[$key] ?? null) ? $value[$key] : [] as $id) {
+                if ((is_string($id) || is_int($id)) && preg_match('/^\d{1,20}$/', (string) $id) === 1 && !in_array((string) $id, $ids, true)) {
+                    $ids[] = (string) $id;
+                }
+            }
+
+            if ($ids !== []) {
+                $result[$key] = array_slice($ids, 0, self::MAX_MENTION_IDS);
+                $parse = array_values(array_diff($parse, [$key]));
+            }
+        }
+
+        if (array_key_exists('replied_user', $value)) {
+            $replied = filter_var($value['replied_user'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($replied !== null) {
+                $result['replied_user'] = $replied;
+            }
+        }
+
+        return ['parse' => $parse] + $result;
+    }
+
+    /**
+     * Discord rejects a message whose embeds hold more than 6000 characters of text in total.
+     * Shorten descriptions starting from the last embed, then drop trailing fields, and as a
+     * last resort trailing embeds.
+     *
+     * @param  list<array<string, mixed>>  $embeds
+     * @return list<array<string, mixed>>
+     */
+    private static function fitEmbedTotal(array $embeds): array
+    {
+        $total = self::totalLength($embeds);
+
+        for ($i = count($embeds) - 1; $i >= 0 && $total > self::MAX_EMBED_TOTAL; $i--) {
+            if (!isset($embeds[$i]['description'])) {
+                continue;
+            }
+
+            $length = mb_strlen($embeds[$i]['description'], 'UTF-8');
+            $shortened = self::truncate($embeds[$i]['description'], max(0, $length - ($total - self::MAX_EMBED_TOTAL)));
+
+            if ($shortened === '') {
+                unset($embeds[$i]['description']);
+            } else {
+                $embeds[$i]['description'] = $shortened;
+            }
+
+            $total = self::totalLength($embeds);
+        }
+
+        for ($i = count($embeds) - 1; $i >= 0 && $total > self::MAX_EMBED_TOTAL; $i--) {
+            while (!empty($embeds[$i]['fields']) && $total > self::MAX_EMBED_TOTAL) {
+                array_pop($embeds[$i]['fields']);
+                $total = self::totalLength($embeds);
+            }
+
+            if (empty($embeds[$i]['fields'])) {
+                unset($embeds[$i]['fields']);
+            }
+        }
+
+        while (count($embeds) > 1 && $total > self::MAX_EMBED_TOTAL) {
+            array_pop($embeds);
+            $total = self::totalLength($embeds);
+        }
+
+        return $embeds;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $embeds
+     */
+    private static function totalLength(array $embeds): int
+    {
+        $total = 0;
+
+        foreach ($embeds as $embed) {
+            $parts = [$embed['title'] ?? '', $embed['description'] ?? '', $embed['footer']['text'] ?? '', $embed['author']['name'] ?? ''];
+            foreach ($embed['fields'] ?? [] as $field) {
+                $parts[] = $field['name'];
+                $parts[] = $field['value'];
+            }
+
+            foreach ($parts as $part) {
+                $total += mb_strlen((string) $part, 'UTF-8');
+            }
+        }
+
+        return $total;
+    }
+}

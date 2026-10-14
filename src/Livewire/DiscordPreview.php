@@ -2,10 +2,13 @@
 
 namespace JoanFo\DiscordWebhooks\Livewire;
 
+use App\Enums\WebhookScope;
 use App\Extensions\Webhooks\WebhookPreview;
+use App\Models\WebhookConfiguration;
 use Illuminate\Support\Carbon;
 use Illuminate\View\View;
 use JoanFo\DiscordWebhooks\Support\EmbedColor;
+use JoanFo\DiscordWebhooks\Support\PayloadRenderer;
 use JoanFo\DiscordWebhooks\Support\Url;
 
 class DiscordPreview extends WebhookPreview
@@ -14,6 +17,28 @@ class DiscordPreview extends WebhookPreview
 
     /** Stylesheet contents, read once per process. */
     private static ?string $css = null;
+
+    /**
+     * Substitutes inside each string value rather than in the JSON text, so sample or event
+     * values with quotes or newlines cannot break the preview. Not sanitised on purpose: the
+     * form state still holds `#hex` colours and `has_timestamp`, which processEmbeds() reads.
+     *
+     * @return array<string, mixed>
+     */
+    protected function resolvePayload(): array
+    {
+        $payload = $this->formPayload ?? $this->record?->payload;
+
+        if (blank($payload) || !is_array($payload)) {
+            return [];
+        }
+
+        $sampleData = $this->resolveScope() === WebhookScope::Server
+            ? WebhookConfiguration::getServerWebhookSampleData()
+            : WebhookConfiguration::getWebhookSampleData();
+
+        return PayloadRenderer::render($payload, $sampleData);
+    }
 
     public function render(): View
     {
