@@ -51,5 +51,5 @@ Read these before updating from 1.0.0.
 
 - Initial release by JoanFo: Discord webhook type with message and embed editor, live preview and a migration that claims existing Discord webhooks.
 
-[1.1.0]: https://github.com/MaxGojko/pelican-discord-webhooks-plugin/compare/v1.0.0...v1.1.0
+[1.1.0]: https://github.com/MaxGojko/pelican-discord-webhooks-plugin/compare/4b47a62...v1.1.0
 [1.0.0]: https://github.com/JoanFo1456/discord-webhooks/releases/tag/v1.0.0
