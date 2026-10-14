@@ -15,10 +15,20 @@ return new class extends Migration
     /**
      * Claim webhooks that point at Discord.
      *
-     * The panel used to do this itself when it added the `type` column. Now that Discord
-     * is a plugin, the panel leaves every webhook as `regular` and this migration takes
-     * ownership on install. Only webhooks still on the built-in type are considered, so a
-     * webhook already claimed by another plugin's type is never overwritten.
+     * Core's `2025_04_09_015500_add_webhook_configurations_type_column` migration also sets
+     * `type = 'discord'` itself, but only for rows whose `type` is still NULL (i.e. when it
+     * adds the `type` column), and it decides by host alone: any host equal to, or a
+     * subdomain of, discord.com or discordapp.com, whatever the path. It leaves every other
+     * row, including rows that already had a type, as is. This migration covers what that
+     * one does not: rows that are still `regular` (or NULL) but whose endpoint is a Discord
+     * webhook URL according to DiscordEndpoint, such as webhooks created before the plugin
+     * was installed. Only built-in type rows are considered, so a webhook already claimed
+     * by another plugin's type is never overwritten, and rows core already marked `discord`
+     * are not touched, even if DiscordEndpoint's stricter check would not match them.
+     *
+     * Because uninstalling rolls this migration back and reinstalling runs it again, a
+     * webhook a user deliberately switched back to `regular` is claimed again on reinstall
+     * if its endpoint still looks like a Discord webhook. That is accepted behaviour.
      */
     public function up(): void
     {
