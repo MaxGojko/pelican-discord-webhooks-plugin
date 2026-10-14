@@ -1,7 +1,7 @@
 {
   "*": {
-    "version": "1.1.0",
-    "download_url": "https://github.com/MaxGojko/pelican-discord-webhooks-plugin/releases/download/v1.1.0/discord-webhooks.zip",
-    "sha256": "a15507bbf038aed79313f7923e0df27bf49df2fe1dd067321c6028a39671c148"
+    "version": "1.1.1",
+    "download_url": "https://github.com/MaxGojko/pelican-discord-webhooks-plugin/releases/download/v1.1.1/discord-webhooks.zip",
+    "sha256": "5c10af2dcb8b730671cfd08ddd7c79d3cb03da9f200f18737953a4d247a5e91c"
   }
 }
