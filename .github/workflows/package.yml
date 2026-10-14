@@ -102,8 +102,10 @@ jobs:
 
   # Runs last: the panel reads update.json from the default branch, so it must only
   # advertise a version whose zip is already attached to the release.
+  # Pre-releases still get a zip on their release, but never become the update offered to panels.
   metadata:
     needs: [resolve, package]
+    if: ${{ !github.event.release.prerelease && !contains(needs.resolve.outputs.version, '-') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

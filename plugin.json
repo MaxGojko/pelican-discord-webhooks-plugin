@@ -1,18 +1,18 @@
 {
   "id": "discord-webhooks",
   "name": "Discord Webhooks",
-  "author": "JoanFo",
-  "version": "1.0.0",
-  "description": "Adds back the Discord Webhooks.",
+  "author": "JoanFo, MaxGojko",
+  "version": "1.1.0",
+  "description": "Adds the Discord webhook type back to Pelican Panel: messages and rich embeds with a live preview and safe delivery.",
   "category": "plugin",
-  "url": "",
-  "update_url": "",
+  "url": "https://github.com/MaxGojko/pelican-discord-webhooks-plugin",
+  "update_url": "https://raw.githubusercontent.com/MaxGojko/pelican-discord-webhooks-plugin/main/update.json",
   "namespace": "JoanFo\\DiscordWebhooks",
   "class": "DiscordWebhooksPlugin",
   "panels": [
     "admin",
     "server"
   ],
-  "panel_version": null,
+  "panel_version": "^1.0.0-rc.1",
   "composer_packages": null
 }
