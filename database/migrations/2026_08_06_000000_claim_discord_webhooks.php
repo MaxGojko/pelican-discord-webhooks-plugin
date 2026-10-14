@@ -2,6 +2,13 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
+use JoanFo\DiscordWebhooks\Support\DiscordEndpoint;
+
+// PluginService registers the plugin's src/ autoload prefix for migrations, but a plugin that is
+// imported and installed within a single request may have been missed by it, so fall back to the file.
+if (!class_exists(DiscordEndpoint::class)) {
+    require_once __DIR__ . '/../../src/Support/DiscordEndpoint.php';
+}
 
 return new class extends Migration
 {
@@ -15,15 +22,25 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // The LIKE only narrows the table down cheaply; whether a row really is a Discord
+        // webhook endpoint is decided by DiscordEndpoint, so hosts such as notdiscord.com or
+        // URLs that merely mention discord.com keep their regular payload format.
         DB::table('webhook_configurations')
             ->where(function ($query) {
                 $query->where('type', 'regular')->orWhereNull('type');
             })
-            ->where(function ($query) {
-                $query->where('endpoint', 'like', '%discord.com%')
-                    ->orWhere('endpoint', 'like', '%discordapp.com%');
-            })
-            ->update(['type' => 'discord']);
+            ->whereRaw('LOWER(endpoint) LIKE ?', ['%discord%'])
+            ->select(['id', 'endpoint'])
+            ->chunkById(200, function ($webhooks) {
+                $ids = $webhooks
+                    ->filter(fn ($webhook) => DiscordEndpoint::matches($webhook->endpoint))
+                    ->pluck('id')
+                    ->all();
+
+                if ($ids !== []) {
+                    DB::table('webhook_configurations')->whereIn('id', $ids)->update(['type' => 'discord']);
+                }
+            });
     }
 
     /**

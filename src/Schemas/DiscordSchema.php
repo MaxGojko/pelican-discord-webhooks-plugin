@@ -19,6 +19,7 @@ use Filament\Schemas\Components\Utilities\Get;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Carbon;
 use JoanFo\DiscordWebhooks\Livewire\DiscordPreview;
+use JoanFo\DiscordWebhooks\Support\DiscordEndpoint;
 
 class DiscordSchema extends BaseSchema
 {
@@ -79,7 +80,7 @@ class DiscordSchema extends BaseSchema
 
     public function matchesEndpoint(string $endpoint): bool
     {
-        return str($endpoint)->contains(['discord.com', 'discordapp.com']);
+        return DiscordEndpoint::matches($endpoint);
     }
 
     /**
